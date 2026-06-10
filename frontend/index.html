@@ -1,0 +1,615 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>GANTT Print Assistant</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js" defer></script>
+  <script src="assets/pdf.min.js"></script>
+  <style>
+    [x-cloak] { display: none !important; }
+    .gantt-bar { background: linear-gradient(90deg, #8B1C2C, #b02337); border-radius: 3px; height: 18px; }
+    .drop-zone.drag-over { border-color: #8B1C2C; background: #fdf2f4; }
+    @keyframes pulse-dot { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+    .pulse { animation: pulse-dot 1.5s ease-in-out infinite; }
+    #pdf-canvas { display: block; box-shadow: 0 4px 32px rgba(0,0,0,0.5); }
+  </style>
+</head>
+<body class="bg-slate-50 min-h-screen font-sans" x-data="app()" x-init="init()">
+
+  <!-- ═══════════════════════════════════════════ PDF VIEWER MODAL ══ -->
+  <div x-show="viewer.open" x-cloak
+       class="fixed inset-0 z-50 flex flex-col bg-gray-950"
+       @keydown.escape.window="viewerClose()"
+       @keydown.arrow-left.window="viewerPrev()"
+       @keydown.arrow-right.window="viewerNext()">
+
+    <!-- Toolbar -->
+    <div class="bg-gray-900 border-b border-gray-700 px-4 py-2.5 flex items-center gap-4 shrink-0">
+      <!-- Title -->
+      <span class="text-white text-sm font-medium truncate flex-1" x-text="viewer.label"></span>
+
+      <!-- Page navigation -->
+      <div class="flex items-center gap-1">
+        <button @click="viewerPrev()"
+                :disabled="viewer.page <= 1 || viewer.rendering"
+                class="w-8 h-8 flex items-center justify-center rounded text-gray-300 hover:bg-gray-700 disabled:opacity-30 transition-colors">
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
+          </svg>
+        </button>
+        <span class="text-gray-300 text-sm tabular-nums px-1"
+              x-text="viewer.totalPages ? viewer.page + ' / ' + viewer.totalPages : '—'"></span>
+        <button @click="viewerNext()"
+                :disabled="viewer.page >= viewer.totalPages || viewer.rendering"
+                class="w-8 h-8 flex items-center justify-center rounded text-gray-300 hover:bg-gray-700 disabled:opacity-30 transition-colors">
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+          </svg>
+        </button>
+      </div>
+
+      <!-- Zoom -->
+      <div class="flex items-center gap-1">
+        <button @click="viewerZoom(-0.25)"
+                :disabled="viewer.scale <= 0.5"
+                class="w-8 h-8 flex items-center justify-center rounded text-gray-300 hover:bg-gray-700 disabled:opacity-30 transition-colors text-lg leading-none">−</button>
+        <span class="text-gray-400 text-xs tabular-nums w-10 text-center" x-text="Math.round(viewer.scale * 100) + '%'"></span>
+        <button @click="viewerZoom(0.25)"
+                :disabled="viewer.scale >= 3"
+                class="w-8 h-8 flex items-center justify-center rounded text-gray-300 hover:bg-gray-700 disabled:opacity-30 transition-colors text-lg leading-none">+</button>
+      </div>
+
+      <!-- Divider -->
+      <div class="w-px h-6 bg-gray-700"></div>
+
+      <!-- Download -->
+      <button @click="viewerDownload()"
+              class="flex items-center gap-1.5 px-3 py-1.5 bg-[#8B1C2C] hover:bg-[#7a1825] text-white text-xs font-semibold rounded transition-colors">
+        <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
+        </svg>
+        Herunterladen
+      </button>
+
+      <!-- Close -->
+      <button @click="viewerClose()"
+              class="w-8 h-8 flex items-center justify-center rounded text-gray-400 hover:text-white hover:bg-gray-700 transition-colors">
+        <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+        </svg>
+      </button>
+    </div>
+
+    <!-- Canvas area -->
+    <div class="flex-1 overflow-auto flex items-start justify-center py-8 px-4 bg-gray-800">
+      <!-- Loading spinner -->
+      <div x-show="viewer.rendering" class="absolute inset-0 flex items-center justify-center pointer-events-none">
+        <div class="w-10 h-10 border-4 border-gray-600 border-t-white rounded-full animate-spin"></div>
+      </div>
+      <canvas id="pdf-canvas"></canvas>
+    </div>
+
+    <!-- Bottom hint -->
+    <div class="bg-gray-900 border-t border-gray-700 px-4 py-1.5 flex items-center justify-center gap-6 text-gray-500 text-xs shrink-0">
+      <span>← → Seite blättern</span>
+      <span>ESC Schließen</span>
+    </div>
+  </div>
+  <!-- ══════════════════════════════════════════════════════════════ -->
+
+  <!-- Header -->
+  <header class="bg-white border-b border-slate-200 px-6 py-3 flex items-center justify-between shadow-sm">
+    <div class="flex items-center gap-5">
+      <img src="assets/asis-logo.jpg" alt="ASIS – Automation Systems & Intelligent Solutions" class="h-10 w-auto" />
+      <div class="w-px h-9 bg-slate-200"></div>
+      <div>
+        <h1 class="text-sm font-semibold text-slate-800 tracking-tight">GANTT Print Assistant</h1>
+        <p class="text-slate-400 text-xs mt-0.5">Projektpläne verdichten · druckoptimiert ausgeben</p>
+      </div>
+    </div>
+    <div class="flex items-center gap-2 text-xs text-slate-400">
+      <span class="w-2 h-2 rounded-full bg-green-400 pulse"></span>
+      MVP v0.1 · read-only
+    </div>
+  </header>
+
+  <main class="max-w-5xl mx-auto px-4 py-8 space-y-6">
+
+    <!-- Step 1: Upload -->
+    <section class="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
+      <div class="flex items-center gap-3 mb-4">
+        <span class="w-7 h-7 rounded-full bg-[#8B1C2C] text-white text-sm font-bold flex items-center justify-center">1</span>
+        <h2 class="text-base font-semibold text-slate-800">Projektplan importieren</h2>
+      </div>
+
+      <div class="mb-4">
+        <label class="block text-xs font-medium text-slate-600 mb-1">Projektname</label>
+        <input type="text" x-model="projectName"
+               class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#8B1C2C]"
+               placeholder="z.B. ERP-Einführung ASIS 2026" />
+      </div>
+
+      <div class="drop-zone border-2 border-dashed border-slate-300 rounded-xl p-8 text-center cursor-pointer transition-colors"
+           @dragover.prevent="$el.classList.add('drag-over')"
+           @dragleave="$el.classList.remove('drag-over')"
+           @drop.prevent="handleDrop($event)"
+           @click="$refs.fileInput.click()">
+        <input type="file" x-ref="fileInput" class="hidden" accept=".xlsx,.xls,.csv,.xml" @change="handleFileSelect($event)" />
+        <div x-show="!file">
+          <svg class="w-10 h-10 mx-auto text-slate-400 mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/>
+          </svg>
+          <p class="text-sm text-slate-600 font-medium">Excel oder CSV hier ablegen</p>
+          <p class="text-xs text-slate-400 mt-1">Excel, CSV oder Microsoft Project XML · Spalten: ID, Phase, Aufgabe, Dauer, Vorgänger, Verantwortlich …</p>
+        </div>
+        <div x-show="file" class="flex items-center justify-center gap-3">
+          <svg class="w-8 h-8 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+          </svg>
+          <div class="text-left">
+            <p class="text-sm font-medium text-slate-700" x-text="file?.name"></p>
+            <p class="text-xs text-slate-400" x-text="file ? formatBytes(file.size) : ''"></p>
+          </div>
+          <button class="ml-4 text-xs text-red-500 hover:text-red-700" @click.stop="file = null; sessionId = null; result = null">
+            Entfernen
+          </button>
+        </div>
+      </div>
+
+      <button
+        class="mt-4 w-full bg-[#8B1C2C] hover:bg-[#7a1825] text-white font-semibold py-2.5 px-4 rounded-lg text-sm transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+        :disabled="!file || loading"
+        @click="uploadFile()">
+        <span x-show="loading" class="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></span>
+        <span x-text="loading ? 'Wird analysiert …' : 'Datei analysieren & importieren'"></span>
+      </button>
+    </section>
+
+    <!-- Step 2: Validation Result -->
+    <section x-show="result" x-cloak class="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
+      <div class="flex items-center gap-3 mb-4">
+        <span class="w-7 h-7 rounded-full bg-[#8B1C2C] text-white text-sm font-bold flex items-center justify-center">2</span>
+        <h2 class="text-base font-semibold text-slate-800">Validierungsergebnis</h2>
+      </div>
+
+      <div class="grid grid-cols-3 gap-4 mb-4">
+        <div class="bg-slate-50 rounded-lg p-4 text-center border border-slate-200">
+          <div class="text-2xl font-bold text-slate-800" x-text="result?.total_rows ?? 0"></div>
+          <div class="text-xs text-slate-500 mt-1">Zeilen gesamt</div>
+        </div>
+        <div class="bg-green-50 rounded-lg p-4 text-center border border-green-200">
+          <div class="text-2xl font-bold text-green-700" x-text="result?.valid_count ?? 0"></div>
+          <div class="text-xs text-green-600 mt-1">Valide Aufgaben</div>
+        </div>
+        <div class="rounded-lg p-4 text-center border" :class="(result?.error_count ?? 0) > 0 ? 'bg-red-50 border-red-200' : 'bg-slate-50 border-slate-200'">
+          <div class="text-2xl font-bold" :class="(result?.error_count ?? 0) > 0 ? 'text-red-700' : 'text-slate-400'" x-text="result?.error_count ?? 0"></div>
+          <div class="text-xs mt-1" :class="(result?.error_count ?? 0) > 0 ? 'text-red-600' : 'text-slate-500'">Fehler</div>
+        </div>
+      </div>
+
+      <div x-show="result?.warnings?.length > 0">
+        <h3 class="text-xs font-semibold text-slate-600 uppercase tracking-wide mb-2">Qualitätswarnungen</h3>
+        <div class="space-y-1 max-h-48 overflow-y-auto">
+          <template x-for="w in result?.warnings ?? []" :key="w.task_id + w.field">
+            <div class="flex items-start gap-2 text-xs px-3 py-2 rounded-lg"
+                 :class="w.severity === 'error' ? 'bg-red-50 text-red-700' : 'bg-amber-50 text-amber-700'">
+              <span x-text="w.severity === 'error' ? '✕' : '⚠'" class="font-bold mt-0.5 shrink-0"></span>
+              <span>
+                <span x-show="w.task_id" class="font-medium" x-text="'[' + w.task_id + '] '"></span>
+                <span x-text="w.field + ': ' + w.message"></span>
+              </span>
+            </div>
+          </template>
+        </div>
+      </div>
+
+      <div x-show="!result?.warnings?.length" class="text-xs text-green-600 flex items-center gap-2">
+        <span>✓</span> Keine Warnungen — Daten sehen sauber aus.
+      </div>
+    </section>
+
+    <!-- Step 3: Condensed Preview -->
+    <section x-show="plan" x-cloak class="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
+      <div class="flex items-center gap-3 mb-4">
+        <span class="w-7 h-7 rounded-full bg-[#8B1C2C] text-white text-sm font-bold flex items-center justify-center">3</span>
+        <h2 class="text-base font-semibold text-slate-800">Verdichtete Projektansicht</h2>
+      </div>
+
+      <div class="grid grid-cols-4 gap-3 mb-5">
+        <div class="bg-red-50 rounded-lg p-3 border border-red-100">
+          <div class="text-lg font-bold text-[#8B1C2C]" x-text="plan?.phases?.length ?? 0"></div>
+          <div class="text-xs text-[#8B1C2C]">Phasen</div>
+        </div>
+        <div class="bg-purple-50 rounded-lg p-3 border border-purple-100">
+          <div class="text-lg font-bold text-purple-700" x-text="plan?.next_milestones?.length ?? 0"></div>
+          <div class="text-xs text-purple-500">Offene Meilensteine</div>
+        </div>
+        <div class="bg-red-50 rounded-lg p-3 border border-red-100">
+          <div class="text-lg font-bold text-red-700" x-text="plan?.open_risks?.length ?? 0"></div>
+          <div class="text-xs text-red-500">Hoch/Kritisch-Risiken</div>
+        </div>
+        <div class="bg-amber-50 rounded-lg p-3 border border-amber-100">
+          <div class="text-lg font-bold text-amber-700" x-text="plan?.blocked_tasks?.length ?? 0"></div>
+          <div class="text-xs text-amber-500">Blockiert</div>
+        </div>
+      </div>
+
+      <h3 class="text-xs font-semibold text-slate-600 uppercase tracking-wide mb-2">Phasen im Überblick</h3>
+      <div class="space-y-2">
+        <template x-for="phase in plan?.phases ?? []" :key="phase.name">
+          <div class="border border-slate-200 rounded-lg px-4 py-3">
+            <div class="flex items-center justify-between mb-1">
+              <span class="text-sm font-semibold text-slate-800" x-text="phase.name"></span>
+              <span class="text-xs text-slate-500" x-text="phase.task_count + ' Aufgaben'"></span>
+            </div>
+            <div class="flex items-center gap-4 text-xs text-slate-500">
+              <span x-text="formatDate(phase.start_date) + ' – ' + formatDate(phase.end_date)"></span>
+              <span x-text="phase.owners?.slice(0,3).join(', ')"></span>
+            </div>
+            <div class="mt-2 h-1.5 bg-slate-100 rounded-full overflow-hidden">
+              <div class="h-full bg-[#8B1C2C] rounded-full transition-all"
+                   :style="'width: ' + getCompletion(phase) + '%'"></div>
+            </div>
+            <div class="text-right text-xs text-[#8B1C2C] mt-0.5" x-text="getCompletion(phase) + '% erledigt'"></div>
+          </div>
+        </template>
+      </div>
+    </section>
+
+    <!-- Step 4: PDF Export -->
+    <section x-show="sessionId" x-cloak class="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
+      <div class="flex items-center gap-3 mb-4">
+        <span class="w-7 h-7 rounded-full bg-[#8B1C2C] text-white text-sm font-bold flex items-center justify-center">4</span>
+        <h2 class="text-base font-semibold text-slate-800">PDF-Export</h2>
+      </div>
+
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <!-- Executive Summary card -->
+        <div class="border border-slate-200 rounded-xl p-5 hover:border-[#8B1C2C] transition-colors">
+          <div class="flex items-start gap-3 mb-3">
+            <div class="w-10 h-12 bg-[#8B1C2C] rounded-sm flex items-center justify-center text-white text-xs font-bold shrink-0"
+                 x-text="exportSize.exec.toUpperCase()"></div>
+            <div>
+              <h3 class="text-sm font-semibold text-slate-800">Executive Summary</h3>
+              <p class="text-xs text-slate-500 mt-0.5">Status · Meilensteine · Top-Risiken · Blockierungen</p>
+              <p class="text-xs text-slate-400 mt-1">Hochformat · eine Seite · für Lenkungskreis</p>
+            </div>
+          </div>
+          <!-- Size picker -->
+          <div class="flex gap-1 mb-3">
+            <span class="text-xs text-slate-400 self-center mr-1">Format:</span>
+            <template x-for="sz in ['a5','a4','a3']" :key="sz">
+              <button
+                class="px-2.5 py-1 rounded text-xs font-semibold border transition-colors"
+                :class="exportSize.exec === sz
+                  ? 'bg-[#8B1C2C] text-white border-[#8B1C2C]'
+                  : 'border-slate-200 text-slate-500 hover:border-[#8B1C2C] hover:text-[#8B1C2C]'"
+                @click="exportSize.exec = sz"
+                x-text="sz.toUpperCase()">
+              </button>
+            </template>
+          </div>
+          <div class="flex gap-2">
+            <button
+              class="flex-1 bg-[#8B1C2C] hover:bg-[#7a1825] text-white text-sm font-semibold py-2 rounded-lg transition-colors flex items-center justify-center gap-1.5 disabled:opacity-40"
+              :disabled="pdfLoading.a4"
+              @click="previewPdf('a4')">
+              <span x-show="pdfLoading.a4" class="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin"></span>
+              <svg x-show="!pdfLoading.a4" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/>
+              </svg>
+              Vorschau
+            </button>
+            <button
+              class="px-3 py-2 border border-slate-300 hover:border-[#8B1C2C] rounded-lg text-slate-600 hover:text-[#8B1C2C] transition-colors disabled:opacity-40"
+              :disabled="pdfLoading.a4"
+              title="Herunterladen"
+              @click="downloadPdf('a4')">
+              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+
+        <!-- Phasenplan / GANTT card -->
+        <div class="border border-slate-200 rounded-xl p-5 hover:border-[#8B1C2C] transition-colors">
+          <div class="flex items-start gap-3 mb-3">
+            <div class="w-10 h-12 bg-slate-700 rounded-sm flex items-center justify-center text-white text-xs font-bold shrink-0"
+                 x-text="exportSize.gantt.toUpperCase()"></div>
+            <div>
+              <h3 class="text-sm font-semibold text-slate-800">Phasenplan / GANTT Light</h3>
+              <p class="text-xs text-slate-500 mt-0.5">Phasen · Meilensteine · Zeitachse nach Monaten</p>
+              <p class="text-xs text-slate-400 mt-1">Querformat · für Workshop und Präsentation</p>
+            </div>
+          </div>
+          <!-- Size picker -->
+          <div class="flex gap-1 mb-3">
+            <span class="text-xs text-slate-400 self-center mr-1">Format:</span>
+            <template x-for="sz in ['a4','a3','a2','a1','a0']" :key="sz">
+              <button
+                class="px-2.5 py-1 rounded text-xs font-semibold border transition-colors"
+                :class="exportSize.gantt === sz
+                  ? 'bg-slate-700 text-white border-slate-700'
+                  : 'border-slate-200 text-slate-500 hover:border-slate-500 hover:text-slate-700'"
+                @click="exportSize.gantt = sz"
+                x-text="sz.toUpperCase()">
+              </button>
+            </template>
+          </div>
+          <div class="flex gap-2">
+            <button
+              class="flex-1 bg-[#8B1C2C] hover:bg-[#7a1825] text-white text-sm font-semibold py-2 rounded-lg transition-colors flex items-center justify-center gap-1.5 disabled:opacity-40"
+              :disabled="pdfLoading.a3"
+              @click="previewPdf('a3')">
+              <span x-show="pdfLoading.a3" class="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin"></span>
+              <svg x-show="!pdfLoading.a3" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/>
+              </svg>
+              Vorschau
+            </button>
+            <button
+              class="px-3 py-2 border border-slate-300 hover:border-[#8B1C2C] rounded-lg text-slate-600 hover:text-[#8B1C2C] transition-colors disabled:opacity-40"
+              :disabled="pdfLoading.a3"
+              title="Herunterladen"
+              @click="downloadPdf('a3')">
+              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Error toast -->
+    <div x-show="error" x-cloak
+         class="fixed bottom-6 right-6 bg-red-600 text-white px-5 py-3 rounded-xl shadow-xl text-sm flex items-center gap-3 z-40"
+         @click="error = null">
+      <span>⚠</span>
+      <span x-text="error"></span>
+      <button class="ml-2 opacity-70 hover:opacity-100">✕</button>
+    </div>
+
+  </main>
+
+  <script>
+    const API = "http://localhost:8000";
+
+    // PDF.js: lokale Dateien, kein CDN-Mismatch
+    pdfjsLib.GlobalWorkerOptions.workerSrc = 'assets/pdf.worker.min.js';
+
+    // PDF.js-Objekte AUSSERHALB von Alpine — Alpine wraps state in Proxy,
+    // und Proxy-Zugriff auf private Felder (#i, #d …) schlägt fehl.
+    let _pdfDoc = null;
+    let _pdfBlob = null;
+    let _pdfFilename = '';
+
+    // ── Fehler-Helfer ─────────────────────────────────────────────
+    // Markiert Fehler mit bereits nutzerfreundlicher (deutscher) Meldung,
+    // z.B. vom Backend via `detail` oder unser eigener Fallback-Text.
+    class ApiError extends Error {}
+
+    async function extractErrorMessage(res, fallback) {
+      try {
+        const data = await res.json();
+        if (data && typeof data.detail === "string" && data.detail) return data.detail;
+      } catch (_) { /* Antwort war kein JSON, z.B. Server-Fehlerseite */ }
+      return `${fallback} (Server-Fehler ${res.status})`;
+    }
+
+    function describeError(e, fallback) {
+      if (e instanceof ApiError) return e.message;
+      if (e instanceof TypeError) {
+        return "Server nicht erreichbar. Bitte prüfen Sie, ob das Backend läuft, und versuchen Sie es erneut.";
+      }
+      return fallback;
+    }
+
+    function app() {
+      return {
+        file: null,
+        projectName: "",
+        loading: false,
+        pdfLoading: { a4: false, a3: false },
+        exportSize: { exec: 'a4', gantt: 'a3' },
+        result: null,
+        plan: null,
+        sessionId: null,
+        error: null,
+
+        // Nur primitive Werte im Alpine-State
+        viewer: {
+          open: false,
+          label: '',
+          page: 1,
+          totalPages: 0,
+          rendering: false,
+          scale: 1.5,
+        },
+
+        init() {},
+
+        // ── File handling ──────────────────────────────────────────
+        handleDrop(event) {
+          event.currentTarget.classList.remove("drag-over");
+          const f = event.dataTransfer.files[0];
+          if (f) this.setFile(f);
+        },
+        handleFileSelect(event) {
+          const f = event.target.files[0];
+          if (f) this.setFile(f);
+        },
+        setFile(f) {
+          const allowed = ["xlsx", "xls", "csv", "xml"];
+          const ext = f.name.split(".").pop().toLowerCase();
+          if (!allowed.includes(ext)) {
+            this.error = `Dateityp ".${ext}" wird nicht unterstützt. Erlaubt sind: Excel (.xlsx, .xls), CSV (.csv) und Microsoft Project XML (.xml).`;
+            return;
+          }
+          this.file = f;
+          this.result = null;
+          this.plan = null;
+          this.sessionId = null;
+        },
+
+        // ── Upload & condense ──────────────────────────────────────
+        async uploadFile() {
+          if (!this.file) return;
+          this.loading = true;
+          this.error = null;
+          this.result = null;
+          this.plan = null;
+          try {
+            const fd = new FormData();
+            fd.append("file", this.file);
+            const res = await fetch(`${API}/upload`, { method: "POST", body: fd });
+            if (!res.ok) throw new ApiError(await extractErrorMessage(res, "Upload fehlgeschlagen"));
+            const data = await res.json();
+            this.result = data;
+            this.sessionId = data.session_id;
+            if (data.valid_count > 0) await this.loadCondensed();
+          } catch (e) {
+            this.error = describeError(e, "Upload fehlgeschlagen. Bitte versuchen Sie es erneut.");
+          } finally {
+            this.loading = false;
+          }
+        },
+
+        async loadCondensed() {
+          try {
+            const name = encodeURIComponent(this.projectName || "Projektplan");
+            const res = await fetch(`${API}/condense/${this.sessionId}?project_name=${name}`);
+            if (!res.ok) throw new ApiError(await extractErrorMessage(res, "Verdichtung fehlgeschlagen"));
+            this.plan = await res.json();
+          } catch (e) {
+            this.error = describeError(e, "Verdichtung fehlgeschlagen. Bitte versuchen Sie es erneut.");
+          }
+        },
+
+        // ── PDF preview (PDF.js) ───────────────────────────────────
+        async previewPdf(format) {
+          if (!this.sessionId) return;
+          this.pdfLoading[format] = true;
+          this.error = null;
+          const size = format === 'a4' ? this.exportSize.exec : this.exportSize.gantt;
+          try {
+            const name = encodeURIComponent(this.projectName || "Projektplan");
+            const res = await fetch(`${API}/pdf/${format}/${this.sessionId}?project_name=${name}&paper_size=${size}`);
+            if (!res.ok) throw new ApiError(await extractErrorMessage(res, "PDF-Generierung fehlgeschlagen"));
+
+            _pdfBlob = await res.blob();
+            _pdfFilename = `${format === 'a4' ? 'executive-summary' : 'phasenplan'}-${size}-${this.sessionId.slice(0, 8)}.pdf`;
+
+            const arrayBuffer = await _pdfBlob.arrayBuffer();
+            _pdfDoc = await pdfjsLib.getDocument({ data: new Uint8Array(arrayBuffer) }).promise;
+
+            const label = format === 'a4' ? 'Executive Summary' : 'Phasenplan';
+            this.viewer.label      = `${label} · ${size.toUpperCase()} ${format === 'a3' ? 'quer' : 'hoch'}`;
+            this.viewer.page       = 1;
+            this.viewer.totalPages = _pdfDoc.numPages;
+            this.viewer.scale      = (size === 'a3' || size === 'a2') ? 0.9 : 1.5;
+            this.viewer.open       = true;
+
+            await this.$nextTick();
+            await this.renderPage(1);
+          } catch (e) {
+            this.error = describeError(e, "PDF-Vorschau fehlgeschlagen. Bitte versuchen Sie es erneut.");
+          } finally {
+            this.pdfLoading[format] = false;
+          }
+        },
+
+        async renderPage(num) {
+          if (!_pdfDoc) return;
+          this.viewer.rendering = true;
+          try {
+            const page     = await _pdfDoc.getPage(num);
+            const viewport = page.getViewport({ scale: this.viewer.scale });
+            const canvas   = document.getElementById('pdf-canvas');
+            canvas.width   = viewport.width;
+            canvas.height  = viewport.height;
+            await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+            this.viewer.page = num;
+          } finally {
+            this.viewer.rendering = false;
+          }
+        },
+
+        async viewerPrev() {
+          if (this.viewer.page > 1 && !this.viewer.rendering)
+            await this.renderPage(this.viewer.page - 1);
+        },
+        async viewerNext() {
+          if (this.viewer.page < this.viewer.totalPages && !this.viewer.rendering)
+            await this.renderPage(this.viewer.page + 1);
+        },
+        async viewerZoom(delta) {
+          const next = Math.max(0.5, Math.min(3, this.viewer.scale + delta));
+          if (next === this.viewer.scale) return;
+          this.viewer.scale = next;
+          await this.renderPage(this.viewer.page);
+        },
+        viewerClose() {
+          this.viewer.open = false;
+          _pdfDoc = null;
+          _pdfBlob = null;
+        },
+        viewerDownload() {
+          if (!_pdfBlob) return;
+          const url = URL.createObjectURL(_pdfBlob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = _pdfFilename;
+          a.click();
+          URL.revokeObjectURL(url);
+        },
+
+        // ── PDF download (direkt) ──────────────────────────────────
+        async downloadPdf(format) {
+          if (!this.sessionId) return;
+          this.pdfLoading[format] = true;
+          this.error = null;
+          const size = format === 'a4' ? this.exportSize.exec : this.exportSize.gantt;
+          try {
+            const name = encodeURIComponent(this.projectName || "Projektplan");
+            const res = await fetch(`${API}/pdf/${format}/${this.sessionId}?project_name=${name}&paper_size=${size}`);
+            if (!res.ok) throw new ApiError(await extractErrorMessage(res, "PDF-Generierung fehlgeschlagen"));
+            const blob = await res.blob();
+            const url  = URL.createObjectURL(blob);
+            const a    = document.createElement("a");
+            a.href     = url;
+            a.download = `${format === 'a4' ? 'executive-summary' : 'phasenplan'}-${size}-${this.sessionId.slice(0, 8)}.pdf`;
+            a.click();
+            URL.revokeObjectURL(url);
+          } catch (e) {
+            this.error = describeError(e, "PDF-Download fehlgeschlagen. Bitte versuchen Sie es erneut.");
+          } finally {
+            this.pdfLoading[format] = false;
+          }
+        },
+
+        // ── Helpers ───────────────────────────────────────────────
+        getCompletion(phase) {
+          const done  = phase.status_summary?.["Erledigt"] ?? 0;
+          const total = phase.task_count ?? 0;
+          return total > 0 ? Math.round((done / total) * 100) : 0;
+        },
+        formatDate(d) {
+          if (!d) return "—";
+          return new Date(d).toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit", year: "2-digit" });
+        },
+        formatBytes(b) {
+          if (b < 1024) return b + " B";
+          if (b < 1024 * 1024) return (b / 1024).toFixed(1) + " KB";
+          return (b / (1024 * 1024)).toFixed(1) + " MB";
+        },
+      };
+    }
+  </script>
+</body>
+</html>
