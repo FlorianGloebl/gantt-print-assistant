@@ -319,6 +319,11 @@ def _parse_xml_to_df(content: bytes) -> pd.DataFrame:
 
         owner = ", ".join(assignments.get(uid, [])[:2]) or None
 
+        # Manche Exporte setzen <Milestone> nicht, obwohl der Vorgang als
+        # Einzeltermin geplant ist (Start == Finish exakt, inkl. Uhrzeit).
+        # Solche Vorgänge funktional als Meilenstein behandeln.
+        is_instant = bool(start_raw) and start_raw == finish_raw
+
         rows.append({
             "task_id":    task_id,
             "task_name":  name,
@@ -327,7 +332,7 @@ def _parse_xml_to_df(content: bytes) -> pd.DataFrame:
             "start_date": start_date,
             "end_date":   end_date,
             "status":     status,
-            "milestone":  "1" if milestone == "1" else "0",
+            "milestone":  "1" if (milestone == "1" or is_instant) else "0",
             "owner":      owner,
             "notes":      notes,
         })

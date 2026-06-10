@@ -248,7 +248,7 @@ def render_a4_executive(plan: CondensedPlan, source_file: str,
         story.append(Paragraph("Nächste Meilensteine", s["section"]))
         ms_rows = [["Meilenstein", "Termin", "Verantwortlich", "Status"]]
         for t in plan.next_milestones[:6]:
-            flag = " ⚠" if (t.end_date - date.today()).days < 14 else ""
+            flag = ' <font color="#d97706">▲</font>' if (t.end_date - date.today()).days < 14 else ""
             ms_rows.append([
                 Paragraph(t.task_name + flag, s["body"]),
                 t.end_date.strftime("%d.%m.%Y"),
