@@ -228,6 +228,11 @@ def _parse_xml_to_df(content: bytes) -> pd.DataFrame:
     # (= Projektname der Wurzel) zurück.
     phase_names: dict[str, str] = {}
     phase_of: dict[str, str] = {}
+    # Unterphase = nächste Gliederungsebene unterhalb der Phase (z.B. Arbeitspakete).
+    # Vorgänge ohne eigene Unterphasen-Überschrift fallen in den Sammeleintrag
+    # "Sonstige Vorgänge" der jeweiligen Phase.
+    subphase_names: dict[str, str] = {}
+    subphase_of: dict[str, str] = {}
     root_wbs = ""
     stack: list[tuple[int, str]] = []
 
@@ -256,20 +261,36 @@ def _parse_xml_to_df(content: bytes) -> pd.DataFrame:
             and _is_zero_duration(duration_raw)
         )
 
-        # WBS-Stack pflegen und Phase für diesen Knoten ableiten
+        # WBS-Stack pflegen und Phase/Unterphase für diesen Knoten ableiten
         while stack and stack[-1][0] >= level:
             stack.pop()
+        parent_wbs = stack[-1][1] if stack else None
+
         if level == 1:
             root_wbs = wbs
             phase_names[wbs] = name or "Ohne Phase"
-        elif not stack or stack[-1][0] == 1:
+        elif parent_wbs is None or stack[-1][0] == 1:
             if is_group_header:
                 phase_of[wbs] = wbs
                 phase_names[wbs] = name or "Ohne Phase"
             else:
                 phase_of[wbs] = root_wbs
         else:
-            phase_of[wbs] = phase_of.get(stack[-1][1], root_wbs)
+            phase_of[wbs] = phase_of.get(parent_wbs, root_wbs)
+
+        # Unterphase: eine Gliederungsebene unterhalb der Phase
+        if level > 1:
+            this_phase = phase_of.get(wbs, root_wbs)
+            if this_phase == wbs:
+                # Knoten IST die Phase -> Sammeleintrag für nicht weiter gruppierte Vorgänge
+                subphase_of[wbs] = wbs
+                subphase_names[wbs] = "Sonstige Vorgänge"
+            elif parent_wbs == this_phase and is_group_header:
+                subphase_of[wbs] = wbs
+                subphase_names[wbs] = name or "Ohne Unterphase"
+            else:
+                subphase_of[wbs] = subphase_of.get(parent_wbs, this_phase)
+
         stack.append((level, wbs))
 
         # Skip project summary row, summary/phase rows and group headers
@@ -277,6 +298,8 @@ def _parse_xml_to_df(content: bytes) -> pd.DataFrame:
             continue
 
         phase = phase_names.get(phase_of.get(wbs, root_wbs), "Ohne Phase")
+        sub_wbs = subphase_of.get(wbs, phase_of.get(wbs, root_wbs))
+        sub_phase = subphase_names.get(sub_wbs, phase)
 
         # Dates: strip time component ("2026-06-09T08:00:00" → "2026-06-09")
         start_date = start_raw[:10] if start_raw else None
@@ -300,6 +323,7 @@ def _parse_xml_to_df(content: bytes) -> pd.DataFrame:
             "task_id":    task_id,
             "task_name":  name,
             "phase":      phase,
+            "sub_phase":  sub_phase,
             "start_date": start_date,
             "end_date":   end_date,
             "status":     status,
@@ -455,10 +479,16 @@ def parse_file(content: bytes, filename: str) -> ValidationResult:
         preds_raw = get("predecessors") or ""
         dependencies = _parse_predecessors(preds_raw)
 
+        phase_val = get("phase") or "Ohne Phase"
+        sub_phase_val = row.get("sub_phase")
+        if pd.isna(sub_phase_val) or not sub_phase_val:
+            sub_phase_val = phase_val
+
         tasks.append(Task(
             task_id=task_id,
             task_name=task_name,
-            phase=get("phase") or "Ohne Phase",
+            phase=phase_val,
+            sub_phase=sub_phase_val,
             start_date=start,
             end_date=end,
             owner=get("owner") or "Nicht zugewiesen",

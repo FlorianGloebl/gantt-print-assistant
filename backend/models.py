@@ -22,6 +22,7 @@ class Task(BaseModel):
     task_id: str
     task_name: str
     phase: str
+    sub_phase: str = ""
     start_date: date
     end_date: date
     owner: str

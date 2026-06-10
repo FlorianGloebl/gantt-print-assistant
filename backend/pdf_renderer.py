@@ -10,7 +10,7 @@ from reportlab.platypus import (
 )
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.enums import TA_CENTER, TA_RIGHT
-from reportlab.graphics.shapes import Drawing, Rect
+from reportlab.graphics.shapes import Drawing, Rect, Polygon
 from reportlab.graphics import renderPDF
 
 from models import CondensedPlan, Phase, Task, TaskStatus, RiskLevel
@@ -112,6 +112,44 @@ def _gantt_bar(task_start: date, task_end: date,
     x = left_frac  * cell_w
     w = max(width_frac * cell_w, 2)
     d.add(Rect(x, 4, w, bar_h, fillColor=bar_color, strokeColor=None, strokeWidth=0))
+    return d
+
+
+def _gantt_cell(tasks: list[Task], bar_start: date, bar_end: date,
+                month_start: date, month_end: date,
+                bar_color, cell_w: float, bar_h: float = 12) -> Drawing | str:
+    """Aggregate-Balken (bar_start–bar_end) plus Meilenstein-Diamanten der
+    übergebenen `tasks` in dieser Monatszelle — alles in einer Drawing."""
+    month_days = (month_end - month_start).days + 1
+
+    elements = []
+    overlap_start = max(bar_start, month_start)
+    overlap_end   = min(bar_end,   month_end)
+    if overlap_start <= overlap_end:
+        left_frac  = (overlap_start - month_start).days / month_days
+        width_frac = ((overlap_end - overlap_start).days + 1) / month_days
+        x = left_frac  * cell_w
+        w = max(width_frac * cell_w, 2)
+        elements.append(Rect(x, 4, w, bar_h, fillColor=bar_color, strokeColor=None, strokeWidth=0))
+
+    diamond_cx = [
+        ((t.end_date - month_start).days + 0.5) / month_days * cell_w
+        for t in tasks
+        if t.milestone and month_start <= t.end_date <= month_end
+    ]
+
+    if not elements and not diamond_cx:
+        return ""
+
+    cell_h = bar_h + 8
+    d = Drawing(cell_w, cell_h)
+    for el in elements:
+        d.add(el)
+    rad = bar_h * 0.6
+    cy  = 4 + bar_h / 2
+    for cx in diamond_cx:
+        d.add(Polygon(points=[cx, cy + rad, cx + rad, cy, cx, cy - rad, cx - rad, cy],
+                      fillColor=C_BRAND, strokeColor=C_WHITE, strokeWidth=0.5))
     return d
 
 # ── A4/Executive-Summary renderer ─────────────────────────────────────────────
@@ -334,7 +372,7 @@ def _tint(c: colors.Color, factor: float) -> colors.Color:
 
 
 def render_a3_gantt(plan: CondensedPlan, source_file: str,
-                    paper_size: str = "a3") -> bytes:
+                    paper_size: str = "a3", detail: bool = False) -> bytes:
     size     = PAPER_SIZES.get(paper_size, A3)
     pagesize = landscape(size)
     sc       = _scale(size, A3)          # scale relative to A3 base
@@ -351,11 +389,12 @@ def render_a3_gantt(plan: CondensedPlan, source_file: str,
     s = _styles(sc_s)
     story = []
 
+    detail_note = " · Detailansicht: alle Vorgänge" if detail else ""
     story.append(Paragraph(f"Phasenplan: {plan.project_name}", s["title"]))
     story.append(Paragraph(
         f"Erstellt: {date.today().strftime('%d.%m.%Y')} · Zeitraum: "
         f"{plan.overall_start.strftime('%d.%m.%Y')} – {plan.overall_end.strftime('%d.%m.%Y')} · "
-        f"{len(plan.phases)} Phasen · {plan.total_tasks} Vorgänge · Papier: {paper_size.upper()} quer",
+        f"{len(plan.phases)} Phasen · {plan.total_tasks} Vorgänge · Papier: {paper_size.upper()} quer{detail_note}",
         s["subtitle"],
     ))
     story.append(HRFlowable(width="100%", thickness=1, color=C_BORDER))
@@ -420,30 +459,62 @@ def render_a3_gantt(plan: CondensedPlan, source_file: str,
             s["body"],
         )]
         for m_start, _ in months:
-            phase_row.append(_gantt_bar(phase.start_date, phase.end_date,
-                                        m_start, _month_end(m_start),
-                                        bar_color, month_w, phase_bar_h))
+            m_end = _month_end(m_start)
+            phase_row.append(_gantt_cell(phase.tasks, phase.start_date, phase.end_date,
+                                         m_start, m_end, bar_color, month_w, phase_bar_h))
         data.append(phase_row)
         style_cmds.append(("BACKGROUND", (0, r), (-1, r), tint_head))
         r += 1
 
-        # Einzelvorgänge der Phase, chronologisch
-        for t in sorted(phase.tasks, key=lambda x: x.start_date):
-            row = [Paragraph(f"{_status_dot(t.status.value)} {t.task_name}", task_style)]
-            for m_start, _ in months:
-                m_end = _month_end(m_start)
-                if t.milestone:
-                    if m_start <= t.end_date <= m_end:
-                        row.append(Paragraph("◆", diamond_style))
+        if detail:
+            # Jeder Einzelvorgang als eigene Zeile, chronologisch
+            for t in sorted(phase.tasks, key=lambda x: x.start_date):
+                row = [Paragraph(f"{_status_dot(t.status.value)} {t.task_name}", task_style)]
+                for m_start, _ in months:
+                    m_end = _month_end(m_start)
+                    if t.milestone:
+                        if m_start <= t.end_date <= m_end:
+                            row.append(Paragraph("◆", diamond_style))
+                        else:
+                            row.append("")
                     else:
-                        row.append("")
-                else:
-                    row.append(_gantt_bar(t.start_date, t.end_date,
-                                          m_start, m_end,
-                                          bar_color, month_w, task_bar_h))
-            data.append(row)
-            style_cmds.append(("BACKGROUND", (0, r), (-1, r), tint_row))
-            r += 1
+                        row.append(_gantt_bar(t.start_date, t.end_date,
+                                              m_start, m_end,
+                                              bar_color, month_w, task_bar_h))
+                data.append(row)
+                style_cmds.append(("BACKGROUND", (0, r), (-1, r), tint_row))
+                r += 1
+        else:
+            # Unterphasen (eine Gliederungsebene unter der Phase) als Sammelzeilen
+            # — hält den Plan auf 1 Seite, statt jeden Einzelvorgang aufzulisten.
+            groups: dict[str, list[Task]] = {}
+            for t in phase.tasks:
+                groups.setdefault(t.sub_phase, []).append(t)
+
+            if len(groups) > 1:
+                group_items = []
+                for g_name, g_tasks in groups.items():
+                    g_start = min(t.start_date for t in g_tasks)
+                    g_end   = max(t.end_date for t in g_tasks)
+                    group_items.append((g_name, g_tasks, g_start, g_end))
+                group_items.sort(key=lambda x: x[2])
+
+                for g_name, g_tasks, g_start, g_end in group_items:
+                    done  = sum(1 for t in g_tasks if t.status == TaskStatus.done)
+                    g_pct = int(done / len(g_tasks) * 100) if g_tasks else 0
+                    sub_row = [Paragraph(
+                        f"{g_name} "
+                        f"<font size='{s['small'].fontSize}' color='#6b7280'>"
+                        f"({len(g_tasks)} Aufg. · {g_pct}%)</font>",
+                        task_style,
+                    )]
+                    for m_start, _ in months:
+                        m_end = _month_end(m_start)
+                        sub_row.append(_gantt_cell(g_tasks, g_start, g_end,
+                                                   m_start, m_end, bar_color, month_w, task_bar_h))
+                    data.append(sub_row)
+                    style_cmds.append(("BACKGROUND", (0, r), (-1, r), tint_row))
+                    r += 1
 
     gantt_table = Table(data, colWidths=col_widths, repeatRows=1)
     gantt_table.setStyle(TableStyle(style_cmds))

@@ -340,6 +340,14 @@
               </button>
             </template>
           </div>
+          <!-- Detailgrad -->
+          <label class="flex items-start gap-2 mb-3 cursor-pointer select-none">
+            <input type="checkbox" x-model="ganttDetail" class="mt-0.5 accent-[#8B1C2C]">
+            <span class="text-xs text-slate-500">
+              Detailliste: jeder Einzelvorgang als eigene Zeile
+              <span class="block text-slate-400">(mehrseitig statt 1-seitige Übersicht)</span>
+            </span>
+          </label>
           <div class="flex gap-2">
             <button
               class="flex-1 bg-[#8B1C2C] hover:bg-[#7a1825] text-white text-sm font-semibold py-2 rounded-lg transition-colors flex items-center justify-center gap-1.5 disabled:opacity-40"
@@ -419,6 +427,7 @@
         loading: false,
         pdfLoading: { a4: false, a3: false },
         exportSize: { exec: 'a4', gantt: 'a3' },
+        ganttDetail: false,
         result: null,
         plan: null,
         sessionId: null,
@@ -499,18 +508,21 @@
           this.pdfLoading[format] = true;
           this.error = null;
           const size = format === 'a4' ? this.exportSize.exec : this.exportSize.gantt;
+          const detail = format === 'a3' && this.ganttDetail;
+          const detailParam = detail ? '&detail=true' : '';
           try {
             const name = encodeURIComponent(this.projectName || "Projektplan");
-            const res = await fetch(`${API}/pdf/${format}/${this.sessionId}?project_name=${name}&paper_size=${size}`);
+            const res = await fetch(`${API}/pdf/${format}/${this.sessionId}?project_name=${name}&paper_size=${size}${detailParam}`);
             if (!res.ok) throw new ApiError(await extractErrorMessage(res, "PDF-Generierung fehlgeschlagen"));
 
             _pdfBlob = await res.blob();
-            _pdfFilename = `${format === 'a4' ? 'executive-summary' : 'phasenplan'}-${size}-${this.sessionId.slice(0, 8)}.pdf`;
+            const namePart = format === 'a4' ? 'executive-summary' : (detail ? 'vorgangsliste' : 'phasenplan');
+            _pdfFilename = `${namePart}-${size}-${this.sessionId.slice(0, 8)}.pdf`;
 
             const arrayBuffer = await _pdfBlob.arrayBuffer();
             _pdfDoc = await pdfjsLib.getDocument({ data: new Uint8Array(arrayBuffer) }).promise;
 
-            const label = format === 'a4' ? 'Executive Summary' : 'Phasenplan';
+            const label = format === 'a4' ? 'Executive Summary' : (detail ? 'Vorgangsliste (Detail)' : 'Phasenplan');
             this.viewer.label      = `${label} · ${size.toUpperCase()} ${format === 'a3' ? 'quer' : 'hoch'}`;
             this.viewer.page       = 1;
             this.viewer.totalPages = _pdfDoc.numPages;
@@ -577,15 +589,18 @@
           this.pdfLoading[format] = true;
           this.error = null;
           const size = format === 'a4' ? this.exportSize.exec : this.exportSize.gantt;
+          const detail = format === 'a3' && this.ganttDetail;
+          const detailParam = detail ? '&detail=true' : '';
           try {
             const name = encodeURIComponent(this.projectName || "Projektplan");
-            const res = await fetch(`${API}/pdf/${format}/${this.sessionId}?project_name=${name}&paper_size=${size}`);
+            const res = await fetch(`${API}/pdf/${format}/${this.sessionId}?project_name=${name}&paper_size=${size}${detailParam}`);
             if (!res.ok) throw new ApiError(await extractErrorMessage(res, "PDF-Generierung fehlgeschlagen"));
             const blob = await res.blob();
             const url  = URL.createObjectURL(blob);
             const a    = document.createElement("a");
             a.href     = url;
-            a.download = `${format === 'a4' ? 'executive-summary' : 'phasenplan'}-${size}-${this.sessionId.slice(0, 8)}.pdf`;
+            const namePart = format === 'a4' ? 'executive-summary' : (detail ? 'vorgangsliste' : 'phasenplan');
+            a.download = `${namePart}-${size}-${this.sessionId.slice(0, 8)}.pdf`;
             a.click();
             URL.revokeObjectURL(url);
           } catch (e) {

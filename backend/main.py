@@ -96,7 +96,7 @@ def pdf_a4(session_id: str, project_name: str = "Projektplan",
 
 @app.get("/pdf/a3/{session_id}")
 def pdf_a3(session_id: str, project_name: str = "Projektplan",
-           preview: bool = False, paper_size: str = "a3"):
+           preview: bool = False, paper_size: str = "a3", detail: bool = False):
     session = _sessions.get(session_id)
     if not session:
         raise HTTPException(404, "Session nicht gefunden.")
@@ -109,8 +109,9 @@ def pdf_a3(session_id: str, project_name: str = "Projektplan",
     else:
         plan = session["plan"]
 
-    pdf_bytes = render_a3_gantt(plan, session["filename"], paper_size=size)
-    disposition = "inline" if preview else f'attachment; filename="phasenplan-{size}-{session_id[:8]}.pdf"'
+    pdf_bytes = render_a3_gantt(plan, session["filename"], paper_size=size, detail=detail)
+    name_part = "vorgangsliste" if detail else "phasenplan"
+    disposition = "inline" if preview else f'attachment; filename="{name_part}-{size}-{session_id[:8]}.pdf"'
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",
