@@ -324,6 +324,15 @@ def _month_label(m_start: date, col_width_pts: float) -> str:
     return m_start.strftime("%b %Y")       # "Jan 2026"
 
 
+def _tint(c: colors.Color, factor: float) -> colors.Color:
+    """Blend a colour toward white by `factor` (0 = unchanged, 1 = white)."""
+    return colors.Color(
+        c.red   + (1 - c.red)   * factor,
+        c.green + (1 - c.green) * factor,
+        c.blue  + (1 - c.blue)  * factor,
+    )
+
+
 def render_a3_gantt(plan: CondensedPlan, source_file: str,
                     paper_size: str = "a3") -> bytes:
     size     = PAPER_SIZES.get(paper_size, A3)
@@ -359,12 +368,10 @@ def render_a3_gantt(plan: CondensedPlan, source_file: str,
     gantt_w    = page_w - label_col
     month_w    = gantt_w / len(months) if months else gantt_w
     col_widths = [label_col] + [month_w] * len(months)
-    bar_h      = max(10, round(12 * sc))
-    # Cell padding and milestone display scale with paper size
-    cell_pad   = max(2, round(4 * min(sc, 1.5)))
-    ms_pad     = max(1, round(2 * min(sc, 1.5)))
-    ms_indent  = max(6, round(12 * min(sc, 1.5)))
-    ms_limit   = 1 if sc < 0.85 else 3   # A4 can't fit 3 milestone rows per phase
+    phase_bar_h = max(9, round(11 * sc))
+    task_bar_h  = max(6, round(8 * sc))
+    # Cell padding scales with paper size
+    cell_pad   = max(1, round(3 * min(sc, 1.5)))
 
     # Header row — Paragraphs need explicit textColor; TEXTCOLOR in TableStyle only affects plain strings
     hdr_style  = ParagraphStyle("hdr_label", fontName="Helvetica-Bold",
@@ -373,77 +380,74 @@ def render_a3_gantt(plan: CondensedPlan, source_file: str,
     hdr_center = ParagraphStyle("hdr_month", fontName="Helvetica-Bold",
                                 fontSize=s["body"].fontSize, leading=s["body"].leading,
                                 alignment=TA_CENTER, textColor=C_WHITE)
-    header = [Paragraph("<b>Phase / Arbeitspaket</b>", hdr_style)]
+    task_style = ParagraphStyle("task_label", fontName="Helvetica",
+                                fontSize=s["small"].fontSize, leading=s["small"].leading,
+                                textColor=C_DARK)
+    diamond_style = ParagraphStyle("diamond", fontName="Helvetica",
+                                   fontSize=max(7, round(10 * min(sc, 1.5))),
+                                   alignment=TA_CENTER, textColor=C_BRAND)
+
+    header = [Paragraph("<b>Phase / Vorgang</b>", hdr_style)]
     for m_start, _ in months:
         label = _month_label(m_start, month_w)
         header.append(Paragraph(f"<b>{label}</b>", hdr_center))
-    t_hdr = Table([header], colWidths=col_widths)
-    t_hdr.setStyle(TableStyle([
-        ("BACKGROUND",    (0, 0), (-1, -1), C_DARK),
-        ("TEXTCOLOR",     (0, 0), (-1, -1), C_WHITE),
-        ("GRID",          (0, 0), (-1, -1), 0.4, colors.HexColor("#374151")),
+
+    # Eine durchgehende Tabelle (Phasen + Einzelvorgänge), Monatsköpfe
+    # wiederholen sich automatisch auf jeder Seite (repeatRows).
+    data = [header]
+    style_cmds = [
+        ("BACKGROUND",    (0, 0), (-1, 0), C_DARK),
+        ("TEXTCOLOR",     (0, 0), (-1, 0), C_WHITE),
+        ("GRID",          (0, 0), (-1, -1), 0.3, C_BORDER),
         ("TOPPADDING",    (0, 0), (-1, -1), cell_pad),
         ("BOTTOMPADDING", (0, 0), (-1, -1), cell_pad),
         ("LEFTPADDING",   (0, 0), (0, -1),  6),
         ("ALIGN",         (1, 0), (-1, -1), "CENTER"),
-    ]))
-    story.append(t_hdr)
+        ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
+    ]
 
+    r = 1  # laufender Zeilenindex in `data` (Zeile 0 = Monatskopf)
     for i, phase in enumerate(plan.phases):
-        pct       = get_phase_completion(phase)
         bar_color = PHASE_BAR_COLORS[i % len(PHASE_BAR_COLORS)]
+        tint_head = _tint(bar_color, 0.82)
+        tint_row  = _tint(bar_color, 0.93)
+        pct       = get_phase_completion(phase)
 
-        row = [Paragraph(
-            f"<b>{phase.name}</b><br/>"
+        phase_row = [Paragraph(
+            f"<b>{phase.name}</b> "
             f"<font size='{s['small'].fontSize}' color='#6b7280'>"
-            f"{phase.task_count} Aufgaben · {pct}% · {', '.join(phase.owners[:2])}"
-            f"</font>",
+            f"({phase.task_count} Aufg. · {pct}%)</font>",
             s["body"],
         )]
         for m_start, _ in months:
-            row.append(_gantt_bar(phase.start_date, phase.end_date,
-                                  m_start, _month_end(m_start),
-                                  bar_color, month_w, bar_h))
+            phase_row.append(_gantt_bar(phase.start_date, phase.end_date,
+                                        m_start, _month_end(m_start),
+                                        bar_color, month_w, phase_bar_h))
+        data.append(phase_row)
+        style_cmds.append(("BACKGROUND", (0, r), (-1, r), tint_head))
+        r += 1
 
-        t_row = Table([row], colWidths=col_widths)
-        t_row.setStyle(TableStyle([
-            ("BACKGROUND",    (0, 0), (0, -1),  C_LIGHT if i % 2 == 0 else C_WHITE),
-            ("BACKGROUND",    (1, 0), (-1, -1), C_WHITE if i % 2 == 0 else C_LIGHT),
-            ("GRID",          (0, 0), (-1, -1), 0.3, C_BORDER),
-            ("TOPPADDING",    (0, 0), (-1, -1), cell_pad),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), cell_pad),
-            ("LEFTPADDING",   (0, 0), (0, -1),  6),
-            ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
-        ]))
-        story.append(t_row)
-
-        # Meilensteine als Unterzeilen (Anzahl begrenzt bei kleinen Formaten)
-        for ms in phase.milestones[:ms_limit]:
-            ms_row = [Paragraph(
-                f"&nbsp;&nbsp;<font color='#8B1C2C'>◆</font> {ms.task_name} "
-                f"<font color='#6b7280'>({ms.owner})</font>",
-                s["small"],
-            )]
+        # Einzelvorgänge der Phase, chronologisch
+        for t in sorted(phase.tasks, key=lambda x: x.start_date):
+            row = [Paragraph(f"{_status_dot(t.status.value)} {t.task_name}", task_style)]
             for m_start, _ in months:
                 m_end = _month_end(m_start)
-                if m_start <= ms.end_date <= m_end:
-                    ms_row.append(Paragraph(
-                        "<font color='#8B1C2C' size='10'>◆</font>",
-                        ParagraphStyle("msp", alignment=TA_CENTER, fontSize=10),
-                    ))
+                if t.milestone:
+                    if m_start <= t.end_date <= m_end:
+                        row.append(Paragraph("◆", diamond_style))
+                    else:
+                        row.append("")
                 else:
-                    ms_row.append("")
-            ms_t = Table([ms_row], colWidths=col_widths)
-            ms_t.setStyle(TableStyle([
-                ("BACKGROUND",    (0, 0), (-1, -1), colors.HexColor("#fdf2f4")),
-                ("GRID",          (0, 0), (-1, -1), 0.2, C_BORDER),
-                ("TOPPADDING",    (0, 0), (-1, -1), ms_pad),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), ms_pad),
-                ("LEFTPADDING",   (0, 0), (0, -1),  ms_indent),
-                ("FONTSIZE",      (0, 0), (-1, -1), s["small"].fontSize),
-                ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
-            ]))
-            story.append(ms_t)
+                    row.append(_gantt_bar(t.start_date, t.end_date,
+                                          m_start, m_end,
+                                          bar_color, month_w, task_bar_h))
+            data.append(row)
+            style_cmds.append(("BACKGROUND", (0, r), (-1, r), tint_row))
+            r += 1
+
+    gantt_table = Table(data, colWidths=col_widths, repeatRows=1)
+    gantt_table.setStyle(TableStyle(style_cmds))
+    story.append(gantt_table)
 
     story.append(Spacer(1, max(4, round(8 * sc))))
     story.append(HRFlowable(width="100%", thickness=0.5, color=C_BORDER))
