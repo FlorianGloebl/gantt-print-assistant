@@ -9,7 +9,7 @@ from parser import parse_file
 from condensator import condense
 from pdf_renderer import render_a4_executive, render_a3_gantt
 
-app = FastAPI(title="GANTT Print Assistant API", version="0.1.0")
+app = FastAPI(title="GANTT Print Assistant API", version="0.1.1")
 
 app.add_middleware(
     CORSMiddleware,
