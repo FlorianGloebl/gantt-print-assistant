@@ -92,6 +92,12 @@ def _parse_bool(val) -> bool:
     return s in ("ja", "yes", "true", "1", "x", "meilenstein", "milestone", "ms", "m")
 
 
+def _is_zero_duration(duration: str | None) -> bool:
+    """ISO-8601 duration (z.B. 'PT0H0M0S') ohne Stunden/Minuten/Sekunden?"""
+    nums = re.findall(r"\d+", duration or "")
+    return all(n == "0" for n in nums) if nums else True
+
+
 def _parse_predecessors(val) -> list[str]:
     if pd.isna(val) or not str(val).strip() or str(val).strip() in ("-", "—", ""):
         return []
@@ -237,10 +243,20 @@ def _parse_xml_to_df(content: bytes) -> pd.DataFrame:
         pct_raw      = _text(task, "PercentComplete") or "0"
         milestone    = _text(task, "Milestone") or "0"
         summary      = _text(task, "Summary") or "0"
+        duration_raw = _text(task, "Duration")
         notes        = _text(task, "Notes")
 
-        # Skip project summary row and summary/phase rows
-        if task_id == "0" or not name or summary == "1" or level == 1:
+        # Gruppenkopf ohne eigene Termine (Duration=0, kein Start/Finish, kein
+        # Meilenstein) — z.B. WBS-Abschnittsüberschriften, deren Summary-Flag
+        # im Export fälschlich auf 0 steht. Wie OutlineLevel=1 überspringen.
+        is_group_header = (
+            summary == "0" and milestone == "0"
+            and not start_raw and not finish_raw
+            and _is_zero_duration(duration_raw)
+        )
+
+        # Skip project summary row, summary/phase rows and group headers
+        if task_id == "0" or not name or summary == "1" or level == 1 or is_group_header:
             continue
 
         # Phase: parent WBS level (e.g. "1.2.3" → look up "1" in phase_names)
