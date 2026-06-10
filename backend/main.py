@@ -25,7 +25,7 @@ _sessions: dict[str, dict] = {}
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "version": "0.1.0"}
+    return {"status": "ok", "version": app.version}
 
 
 @app.post("/upload", response_model=ValidationResult)
