@@ -378,7 +378,9 @@
   </main>
 
   <script>
-    const API = "http://localhost:8000";
+    const API = ["localhost", "127.0.0.1"].includes(location.hostname)
+      ? "http://localhost:8000"
+      : "https://gantt-print-assistant-api.onrender.com";
 
     // PDF.js: lokale Dateien, kein CDN-Mismatch
     pdfjsLib.GlobalWorkerOptions.workerSrc = 'assets/pdf.worker.min.js';
