@@ -221,14 +221,15 @@ def _parse_xml_to_df(content: bytes) -> pd.DataFrame:
 
     all_tasks = _findall(tasks_root, "Task")
 
-    # Map top-level WBS prefix → phase name
+    # ── WBS-Hierarchie für Phasen-Zuordnung ─────────────────────────────────────
+    # Phase = nächster Vorfahre, der direktes Kind der Projektwurzel (OutlineLevel=1)
+    # und selbst ein Gruppenkopf ist (z.B. "in-house planning and engineering").
+    # Gibt es keine solche Zwischenebene, fällt alles auf eine Phase
+    # (= Projektname der Wurzel) zurück.
     phase_names: dict[str, str] = {}
-    for task in all_tasks:
-        level = int(_text(task, "OutlineLevel") or "1")
-        wbs   = _text(task, "WBS") or ""
-        name  = _text(task, "Name") or ""
-        if level == 1 and name:
-            phase_names[wbs] = name
+    phase_of: dict[str, str] = {}
+    root_wbs = ""
+    stack: list[tuple[int, str]] = []
 
     # ── Build DataFrame rows ───────────────────────────────────────────────────
     rows = []
@@ -255,13 +256,27 @@ def _parse_xml_to_df(content: bytes) -> pd.DataFrame:
             and _is_zero_duration(duration_raw)
         )
 
+        # WBS-Stack pflegen und Phase für diesen Knoten ableiten
+        while stack and stack[-1][0] >= level:
+            stack.pop()
+        if level == 1:
+            root_wbs = wbs
+            phase_names[wbs] = name or "Ohne Phase"
+        elif not stack or stack[-1][0] == 1:
+            if is_group_header:
+                phase_of[wbs] = wbs
+                phase_names[wbs] = name or "Ohne Phase"
+            else:
+                phase_of[wbs] = root_wbs
+        else:
+            phase_of[wbs] = phase_of.get(stack[-1][1], root_wbs)
+        stack.append((level, wbs))
+
         # Skip project summary row, summary/phase rows and group headers
         if task_id == "0" or not name or summary == "1" or level == 1 or is_group_header:
             continue
 
-        # Phase: parent WBS level (e.g. "1.2.3" → look up "1" in phase_names)
-        top_wbs = wbs.split(".")[0] if wbs else ""
-        phase   = phase_names.get(top_wbs) or (f"Phase {top_wbs}" if top_wbs else "Ohne Phase")
+        phase = phase_names.get(phase_of.get(wbs, root_wbs), "Ohne Phase")
 
         # Dates: strip time component ("2026-06-09T08:00:00" → "2026-06-09")
         start_date = start_raw[:10] if start_raw else None
