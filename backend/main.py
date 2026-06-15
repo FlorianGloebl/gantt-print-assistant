@@ -8,6 +8,7 @@ from models import CondensedPlan, ValidationResult
 from parser import parse_file
 from condensator import condense
 from pdf_renderer import render_a4_executive, render_a3_gantt
+from exporters import export_json, export_excel, export_csv
 
 app = FastAPI(title="GANTT Print Assistant API", version="0.1.1")
 
@@ -46,6 +47,7 @@ async def upload_file(file: UploadFile = File(...)):
         "filename": file.filename,
         "tasks": result.valid_tasks,
         "imported_at": datetime.now().isoformat(),
+        "validation_warnings": result.warnings,
     }
     result_dict = result.model_dump(mode="json")
     result_dict["session_id"] = session_id
@@ -62,6 +64,7 @@ def condense_plan(session_id: str, project_name: str = "Projektplan"):
         project_id=session_id[:8],
         project_name=project_name,
         tasks=session["tasks"],
+        validation_warnings=session.get("validation_warnings", []),
     )
     session["plan"] = plan
     return plan.model_dump(mode="json")
@@ -80,7 +83,8 @@ def pdf_a4(session_id: str, project_name: str = "Projektplan",
     size = paper_size.lower() if paper_size.lower() in VALID_SIZES else "a4"
 
     if "plan" not in session:
-        plan = condense(session_id[:8], project_name, session["tasks"])
+        plan = condense(session_id[:8], project_name, session["tasks"],
+                         validation_warnings=session.get("validation_warnings", []))
         session["plan"] = plan
     else:
         plan = session["plan"]
@@ -104,7 +108,8 @@ def pdf_a3(session_id: str, project_name: str = "Projektplan",
     size = paper_size.lower() if paper_size.lower() in VALID_SIZES else "a3"
 
     if "plan" not in session:
-        plan = condense(session_id[:8], project_name, session["tasks"])
+        plan = condense(session_id[:8], project_name, session["tasks"],
+                         validation_warnings=session.get("validation_warnings", []))
         session["plan"] = plan
     else:
         plan = session["plan"]
@@ -116,6 +121,59 @@ def pdf_a3(session_id: str, project_name: str = "Projektplan",
         content=pdf_bytes,
         media_type="application/pdf",
         headers={"Content-Disposition": disposition},
+    )
+
+
+def _get_plan(session: dict, session_id: str, project_name: str):
+    if "plan" not in session:
+        plan = condense(session_id[:8], project_name, session["tasks"],
+                         validation_warnings=session.get("validation_warnings", []))
+        session["plan"] = plan
+    return session["plan"]
+
+
+@app.get("/export/json/{session_id}")
+def export_json_endpoint(session_id: str, project_name: str = "Projektplan"):
+    session = _sessions.get(session_id)
+    if not session:
+        raise HTTPException(404, "Session nicht gefunden.")
+
+    plan = _get_plan(session, session_id, project_name)
+    data = export_json(plan, session["tasks"])
+    return Response(
+        content=data,
+        media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="projektplan-{session_id[:8]}.json"'},
+    )
+
+
+@app.get("/export/excel/{session_id}")
+def export_excel_endpoint(session_id: str, project_name: str = "Projektplan"):
+    session = _sessions.get(session_id)
+    if not session:
+        raise HTTPException(404, "Session nicht gefunden.")
+
+    _get_plan(session, session_id, project_name)
+    data = export_excel(session["tasks"])
+    return Response(
+        content=data,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="projektplan-{session_id[:8]}.xlsx"'},
+    )
+
+
+@app.get("/export/csv/{session_id}")
+def export_csv_endpoint(session_id: str, project_name: str = "Projektplan"):
+    session = _sessions.get(session_id)
+    if not session:
+        raise HTTPException(404, "Session nicht gefunden.")
+
+    _get_plan(session, session_id, project_name)
+    data = export_csv(session["tasks"])
+    return Response(
+        content=data,
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="projektplan-{session_id[:8]}.csv"'},
     )
 
 

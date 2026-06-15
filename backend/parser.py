@@ -2,28 +2,64 @@ import re
 import io
 import xml.etree.ElementTree as ET
 import pandas as pd
-from datetime import datetime, date, timedelta
+from datetime import datetime, date
 from typing import Tuple, List
-from models import Task, TaskStatus, RiskLevel, ValidationResult, ValidationWarning
+from models import (
+    Task, TaskStatus, RiskLevel, ValidationResult, ValidationWarning,
+    Dependency, DependencyType, GateStatus, TaskType,
+)
+from dateutils import add_workdays
+from quality import STANDARD_GATES, recategorize_sonstige, assess_data_basis
 
 COLUMN_ALIASES = {
     "task_id":       ["id", "task_id", "vorgangs-id", "nr", "nummer", "no", "psp_code"],
     "task_name":     ["aufgabe", "task", "task_name", "vorgangsname", "titel", "name",
-                      "vorgang_oder_meilenstein", "beschreibung"],
+                      "vorgang_oder_meilenstein", "beschreibung", "vorgang"],
     "phase":         ["phase", "projektphase", "abschnitt", "bereich"],
-    "start_date":    ["start", "start_date", "startdatum", "beginn", "von"],
-    "end_date":      ["end", "end_date", "enddatum", "ende", "bis", "fälligkeitsdatum"],
+    "work_package":  ["arbeitspaket", "work_package", "workpackage", "teilprojekt"],
+    "task_type":     ["task_type", "vorgangstyp"],
+    "department":    ["abteilung", "department"],
+    "start_date":    ["start", "start_date", "startdatum", "beginn", "von",
+                      "plan start", "plan_start"],
+    "end_date":      ["end", "end_date", "enddatum", "ende", "bis", "fälligkeitsdatum",
+                      "plan ende", "plan_ende", "plan_end"],
+    "actual_start":  ["ist start", "ist_start", "actual_start", "actual start"],
+    "actual_end":    ["ist ende", "ist_ende", "actual_end", "actual end"],
+    "forecast_start": ["forecast start", "forecast_start", "prognose_start"],
+    "forecast_end":  ["forecast ende", "forecast_ende", "forecast_end", "forecast end",
+                      "prognose_ende"],
+    "baseline_start": ["baseline start", "baseline_start"],
+    "baseline_end":  ["baseline ende", "baseline_ende", "baseline_end", "baseline end"],
+    "progress_percent": ["fortschritt %", "fortschritt_%", "fortschritt", "progress",
+                         "progress_percent", "% complete", "percentcomplete"],
     "owner":         ["owner", "verantwortlich", "verantwortlicher", "zuständig", "responsible"],
     "status":        ["status", "zustand"],
     "milestone":     ["meilenstein", "milestone", "ms", "typ"],
+    "milestone_name": ["meilenstein_name", "milestone_name"],
     "risk_level":    ["risiko", "risk", "risk_level", "risikostufe"],
-    "notes":         ["notizen", "notes", "kommentar", "anmerkung",
+    "risk_description": ["risiko_beschreibung", "risikobeschreibung", "risk_description"],
+    "mitigation":    ["maßnahme", "massnahme", "mitigation"],
+    "buffer_days":   ["puffer_tage", "puffer", "buffer_days", "buffer"],
+    "is_gate":       ["gate", "is_gate"],
+    "gate_criteria": ["gate_kriterien", "gate kriterien", "gate_criteria"],
+    "gate_status":   ["gate_status"],
+    "decision_required": ["offene_entscheidung", "offene entscheidung", "decision_required",
+                          "entscheidung_erforderlich"],
+    "decision_owner": ["entscheidungsverantwortlicher", "decision_owner"],
+    "parent_id":     ["parent_id", "übergeordnete_id", "uebergeordnete_id"],
+    "supplier":      ["lieferant", "supplier"],
+    "external_dependency": ["externe_abhängigkeit", "externe_abhaengigkeit", "external_dependency"],
+    "cost_relevance": ["kostenrelevanz", "cost_relevance"],
+    "customer_visible_flag": ["kundensichtbar", "customer_visible", "customer_visible_flag"],
+    "comments":      ["kommentar", "comments"],
+    "notes":         ["notizen", "notes", "anmerkung",
                       "risiko_hinweis", "beschreibung_ergebnis"],
     "duration_days": ["dauer_arbeitstage", "dauer", "duration", "arbeitstage", "dauer_tage",
                       "dauer_at"],
     "predecessors":  ["vorgaenger_ids", "vorgänger_ids", "vorgaenger", "predecessors",
                       "vorgänger", "pred"],
-    "time_offset":   ["zeitversatz_at", "zeitversatz", "lag", "offset"],
+    "dependency_type": ["abhängigkeitstyp", "abhaengigkeitstyp", "dependency_type"],
+    "time_offset":   ["zeitversatz_at", "zeitversatz", "lag", "offset", "lag_days"],
 }
 
 STATUS_MAP = {
@@ -44,6 +80,33 @@ STATUS_MAP = {
     "complete":       TaskStatus.done,
     "completed":      TaskStatus.done,
     "fertig":         TaskStatus.done,
+    "entfallen":      TaskStatus.cancelled,
+    "cancelled":      TaskStatus.cancelled,
+    "canceled":       TaskStatus.cancelled,
+    "abgebrochen":    TaskStatus.cancelled,
+}
+
+DEPENDENCY_TYPE_MAP = {
+    "fs": DependencyType.finish_to_start, "finish_to_start": DependencyType.finish_to_start,
+    "ss": DependencyType.start_to_start, "start_to_start": DependencyType.start_to_start,
+    "ff": DependencyType.finish_to_finish, "finish_to_finish": DependencyType.finish_to_finish,
+    "sf": DependencyType.start_to_finish, "start_to_finish": DependencyType.start_to_finish,
+}
+
+GATE_STATUS_MAP = {
+    "offen": GateStatus.open, "open": GateStatus.open,
+    "im_plan": GateStatus.on_track, "im plan": GateStatus.on_track, "on_track": GateStatus.on_track,
+    "gefährdet": GateStatus.at_risk, "gefaehrdet": GateStatus.at_risk, "at_risk": GateStatus.at_risk,
+    "erreicht": GateStatus.passed, "passed": GateStatus.passed,
+    "nicht_erreicht": GateStatus.failed, "nicht erreicht": GateStatus.failed, "failed": GateStatus.failed,
+}
+
+# MSPDI <PredecessorLink><Type>: 0=FF, 1=FS, 2=SF, 3=SS
+MSPDI_DEPENDENCY_TYPE = {
+    "0": DependencyType.finish_to_finish,
+    "1": DependencyType.finish_to_start,
+    "2": DependencyType.start_to_finish,
+    "3": DependencyType.start_to_start,
 }
 
 RISK_MAP = {
@@ -105,16 +168,46 @@ def _parse_predecessors(val) -> list[str]:
     return [p.strip() for p in parts if p.strip() and p.strip() not in ("-", "—")]
 
 
-def _add_workdays(d: date, n: int) -> date:
-    """Add n working days (Mon–Fri) to date d."""
-    if n <= 0:
-        return d
-    added = 0
-    while added < n:
-        d = d + timedelta(days=1)
-        if d.weekday() < 5:
-            added += 1
-    return d
+def _parse_list(val, sep: str = ";") -> list[str]:
+    """Trennzeichen-getrennte Liste (z.B. Gate-Kriterien) -> list[str]."""
+    if pd.isna(val) or not str(val).strip():
+        return []
+    return [p.strip() for p in str(val).split(sep) if p.strip()]
+
+
+def _parse_int(val) -> int | None:
+    if val is None or (isinstance(val, float) and pd.isna(val)) or str(val).strip() == "":
+        return None
+    try:
+        return int(float(val))
+    except (ValueError, TypeError):
+        return None
+
+
+def _build_predecessor_links(ids: list[str], dep_type: DependencyType, lag: int) -> list[Dependency]:
+    """CSV-Vereinfachung: ein Abhängigkeitstyp + Zeitversatz gilt für alle
+    Vorgänger einer Zeile."""
+    return [Dependency(task_id=tid, type=dep_type, lag_days=lag) for tid in ids]
+
+
+def _link_lag_to_days(lag_raw: str | None, format_raw: str | None) -> int:
+    """MSPDI <LinkLag> (Zehntel-Minuten) -> Tage.
+
+    Format 7/35 = "Elapsed days" (24h-Tag, 1440 min/Tag); andere Formate
+    (z.B. 3 = "Tage" im Projektkalender) gehen von einem 8h-Arbeitstag
+    (480 min/Tag) aus."""
+    try:
+        lag = int(lag_raw or "0")
+    except ValueError:
+        return 0
+    if lag == 0:
+        return 0
+    try:
+        fmt = int(format_raw or "7")
+    except ValueError:
+        fmt = 7
+    minutes_per_day = 1440 if fmt in (7, 35) else 480
+    return round(lag / 10 / minutes_per_day)
 
 
 def _compute_cpm_dates(
@@ -156,11 +249,11 @@ def _compute_cpm_dates(
             if pred_ends:
                 latest = max(pred_ends)
                 # next working day after latest predecessor, plus any lag
-                start = _add_workdays(latest, 1 + max(offset, 0))
+                start = add_workdays(latest, 1 + max(offset, 0))
             else:
                 start = project_start
 
-        end = _add_workdays(start, max(duration - 1, 0))
+        end = add_workdays(start, max(duration - 1, 0))
         in_progress.discard(tid)
         computed[tid] = (start, end)
         return computed[tid]
@@ -221,6 +314,14 @@ def _parse_xml_to_df(content: bytes) -> pd.DataFrame:
 
     all_tasks = _findall(tasks_root, "Task")
 
+    # ── UID → ID-Mapping (für Auflösung von PredecessorUID) ─────────────────────
+    uid_to_id: dict[str, str] = {}
+    for task in all_tasks:
+        uid = _text(task, "UID") or ""
+        tid = _text(task, "ID") or uid
+        if uid:
+            uid_to_id[uid] = tid
+
     # ── WBS-Hierarchie für Phasen-Zuordnung ─────────────────────────────────────
     # Phase = nächster Vorfahre, der direktes Kind der Projektwurzel (OutlineLevel=1)
     # und selbst ein Gruppenkopf ist (z.B. "in-house planning and engineering").
@@ -251,6 +352,8 @@ def _parse_xml_to_df(content: bytes) -> pd.DataFrame:
         summary      = _text(task, "Summary") or "0"
         duration_raw = _text(task, "Duration")
         notes        = _text(task, "Notes")
+        active       = _text(task, "Active")
+        critical     = _text(task, "Critical")
 
         # Gruppenkopf ohne eigene Termine (Duration=0, kein Start/Finish, kein
         # Meilenstein) — z.B. WBS-Abschnittsüberschriften, deren Summary-Flag
@@ -305,12 +408,14 @@ def _parse_xml_to_df(content: bytes) -> pd.DataFrame:
         start_date = start_raw[:10] if start_raw else None
         end_date   = finish_raw[:10] if finish_raw else None
 
-        # Status from % complete
+        # Status from % complete (Active=0 -> "entfallen", überstimmt Fortschritt)
         try:
             pct = int(float(pct_raw))
         except (ValueError, TypeError):
             pct = 0
-        if pct == 100:
+        if active == "0":
+            status = "entfallen"
+        elif pct == 100:
             status = "erledigt"
         elif pct > 0:
             status = "in arbeit"
@@ -324,6 +429,32 @@ def _parse_xml_to_df(content: bytes) -> pd.DataFrame:
         # Solche Vorgänge funktional als Meilenstein behandeln.
         is_instant = bool(start_raw) and start_raw == finish_raw
 
+        # Ist-Termine ("NA" oder fehlend = nicht gesetzt)
+        actual_start_raw = _text(task, "ActualStart")
+        actual_finish_raw = _text(task, "ActualFinish")
+        actual_start = actual_start_raw[:10] if actual_start_raw and actual_start_raw != "NA" else None
+        actual_end = actual_finish_raw[:10] if actual_finish_raw and actual_finish_raw != "NA" else None
+
+        # Baseline-Termine (Kind-Element <Baseline><Start>/<Finish>)
+        baseline_start = baseline_end = None
+        baseline_el = _find(task, "Baseline")
+        if baseline_el is not None:
+            bs = _text(baseline_el, "Start")
+            bf = _text(baseline_el, "Finish")
+            baseline_start = bs[:10] if bs and bs != "NA" else None
+            baseline_end = bf[:10] if bf and bf != "NA" else None
+
+        # Vorgängerbeziehungen (Typ + Lag)
+        predecessor_links_raw: list[dict] = []
+        for link in _findall(task, "PredecessorLink"):
+            pred_uid = _text(link, "PredecessorUID")
+            if not pred_uid:
+                continue
+            pred_id = uid_to_id.get(pred_uid, pred_uid)
+            link_type = MSPDI_DEPENDENCY_TYPE.get(_text(link, "Type") or "1", DependencyType.finish_to_start)
+            lag_days = _link_lag_to_days(_text(link, "LinkLag"), _text(link, "LagFormat"))
+            predecessor_links_raw.append({"task_id": pred_id, "type": link_type, "lag_days": lag_days})
+
         rows.append({
             "task_id":    task_id,
             "task_name":  name,
@@ -335,6 +466,13 @@ def _parse_xml_to_df(content: bytes) -> pd.DataFrame:
             "milestone":  "1" if (milestone == "1" or is_instant) else "0",
             "owner":      owner,
             "notes":      notes,
+            "actual_start": actual_start,
+            "actual_end": actual_end,
+            "baseline_start": baseline_start,
+            "baseline_end": baseline_end,
+            "progress_percent": pct,
+            "predecessor_links_raw": predecessor_links_raw,
+            "critical_path_flag": critical == "1",
         })
 
     return pd.DataFrame(rows) if rows else pd.DataFrame()
@@ -412,7 +550,7 @@ def parse_file(content: bytes, filename: str) -> ValidationResult:
 
         # Use next Monday (or today if today is a workday) as project start
         today = date.today()
-        project_start = today if today.weekday() < 5 else _add_workdays(today, 1)
+        project_start = today if today.weekday() < 5 else add_workdays(today, 1)
         cpm_dates = _compute_cpm_dates(raw_for_cpm, project_start)
     else:
         cpm_dates = {}
@@ -481,13 +619,61 @@ def parse_file(content: bytes, filename: str) -> ValidationResult:
 
         milestone = _parse_bool(get("milestone"))
 
-        preds_raw = get("predecessors") or ""
-        dependencies = _parse_predecessors(preds_raw)
+        # Vorgängerbeziehungen: aus XML (Typ+Lag je Verknüpfung) übernehmen,
+        # sonst aus CSV-Spalten ableiten (ein Typ+Lag gilt für alle Vorgänger
+        # einer Zeile).
+        pred_links_raw = row.get("predecessor_links_raw")
+        if pred_links_raw:
+            predecessor_links = [
+                Dependency(task_id=pl["task_id"], type=pl["type"], lag_days=pl["lag_days"])
+                for pl in pred_links_raw
+            ]
+            dependencies = [pl["task_id"] for pl in pred_links_raw]
+        else:
+            dependencies = _parse_predecessors(get("predecessors"))
+            dep_type = DEPENDENCY_TYPE_MAP.get((get("dependency_type") or "").lower(),
+                                                DependencyType.finish_to_start)
+            lag = _parse_int(get("time_offset")) or 0
+            predecessor_links = _build_predecessor_links(dependencies, dep_type, lag)
 
         phase_val = get("phase") or "Ohne Phase"
         sub_phase_val = row.get("sub_phase")
         if pd.isna(sub_phase_val) or not sub_phase_val:
             sub_phase_val = phase_val
+
+        # Gate-Erkennung aus "Gate"-Spalte: Wert = Gate-Name, bei Treffer gegen
+        # STANDARD_GATES Kriterien übernehmen (separate gate_criteria-Spalte
+        # überschreibt diese).
+        gate_raw = get("is_gate")
+        is_gate = False
+        gate_name = None
+        gate_criteria: list[str] = []
+        if gate_raw:
+            is_gate = True
+            gate_name = gate_raw
+            for std_name, gate_def in STANDARD_GATES.items():
+                if std_name.lower() == gate_raw.lower():
+                    gate_name = std_name
+                    gate_criteria = list(gate_def.criteria)
+                    break
+
+        gate_criteria_raw = get("gate_criteria")
+        if gate_criteria_raw:
+            gate_criteria = _parse_list(gate_criteria_raw)
+
+        gate_status = GATE_STATUS_MAP.get((get("gate_status") or "").lower())
+        if is_gate and gate_status is None:
+            gate_status = GateStatus.open
+
+        task_type_raw = (get("task_type") or "").lower()
+        if task_type_raw == "gate" or is_gate:
+            task_type = TaskType.gate
+        elif task_type_raw in ("milestone", "meilenstein") or milestone:
+            task_type = TaskType.milestone
+        else:
+            task_type = TaskType.task
+
+        cost_relevance_raw = (get("cost_relevance") or "").lower()
 
         tasks.append(Task(
             task_id=task_id,
@@ -504,7 +690,38 @@ def parse_file(content: bytes, filename: str) -> ValidationResult:
             notes=get("notes"),
             source_system="Excel",
             source_reference=str(row_num),
+            predecessor_links=predecessor_links,
+            parent_id=get("parent_id"),
+            work_package=get("work_package"),
+            task_type=task_type,
+            department=get("department"),
+            baseline_start=_parse_date(get("baseline_start")),
+            baseline_end=_parse_date(get("baseline_end")),
+            actual_start=_parse_date(get("actual_start")),
+            actual_end=_parse_date(get("actual_end")),
+            forecast_start=_parse_date(get("forecast_start")),
+            forecast_end=_parse_date(get("forecast_end")),
+            progress_percent=_parse_int(get("progress_percent")) or 0,
+            critical_path_flag=bool(row.get("critical_path_flag")),
+            buffer_days=_parse_int(get("buffer_days")),
+            risk_description=get("risk_description"),
+            mitigation=get("mitigation"),
+            milestone_name=get("milestone_name"),
+            is_gate=is_gate,
+            gate_name=gate_name,
+            gate_criteria=gate_criteria,
+            gate_status=gate_status,
+            decision_required=_parse_bool(get("decision_required")),
+            decision_owner=get("decision_owner"),
+            external_dependency=_parse_bool(get("external_dependency")),
+            supplier=get("supplier"),
+            cost_relevance=RISK_MAP.get(cost_relevance_raw),
+            customer_visible_flag=_parse_bool(get("customer_visible_flag")),
+            comments=get("comments"),
         ))
+
+    tasks, recategorize_warnings = recategorize_sonstige(tasks)
+    data_basis_warnings = assess_data_basis(tasks)
 
     return ValidationResult(
         valid_tasks=tasks,
@@ -512,4 +729,6 @@ def parse_file(content: bytes, filename: str) -> ValidationResult:
         total_rows=total_rows,
         valid_count=len(tasks),
         error_count=error_count,
+        data_basis_warnings=data_basis_warnings,
+        quality_warnings=recategorize_warnings,
     )
