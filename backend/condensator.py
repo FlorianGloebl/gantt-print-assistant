@@ -22,12 +22,11 @@ def condense(
     validation_warnings = validation_warnings or []
     today = date.today()
 
-    # 1. Abhängigkeitsgraph, Zyklen, Nachfolger
+    # 1. Abhängigkeitsgraph, Zyklen
     _, dangling_warnings = cpm.build_dependency_graph(tasks)
     cycles = cpm.detect_circular_dependencies(tasks)
-    cpm.populate_successors(tasks)
 
-    # 2. Critical Path Method
+    # 2. Critical Path Method (ruft populate_successors intern auf)
     cpm_info = cpm.compute_cpm(tasks)
 
     # 3./4. Forecast/Verzug + Ampel je Vorgang

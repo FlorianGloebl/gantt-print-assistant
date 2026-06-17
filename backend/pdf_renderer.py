@@ -25,7 +25,6 @@ def _scale(target, base=A4) -> float:
 
 # ── ASIS brand colours ─────────────────────────────────────────────────────────
 C_BRAND  = colors.HexColor("#8B1C2C")
-C_DARK   = colors.HexColor("#8B1C2C")
 C_LIGHT  = colors.HexColor("#fdf2f4")
 C_GREEN  = colors.HexColor("#16a34a")
 C_YELLOW = colors.HexColor("#d97706")
@@ -62,10 +61,10 @@ def _styles(sc: float = 1.0) -> dict:
         return max(2, round(n * sc))            # spacing values scale with paper
 
     return {
-        "title":    ParagraphStyle("title",    fontName="Helvetica-Bold",  fontSize=sz(16), leading=sz(21), textColor=C_DARK,  spaceAfter=sp(6)),
+        "title":    ParagraphStyle("title",    fontName="Helvetica-Bold",  fontSize=sz(16), leading=sz(21), textColor=C_BRAND,  spaceAfter=sp(6)),
         "subtitle": ParagraphStyle("subtitle", fontName="Helvetica",       fontSize=sz(9),  leading=sz(13), textColor=C_GREY,  spaceAfter=sp(8)),
-        "section":  ParagraphStyle("section",  fontName="Helvetica-Bold",  fontSize=sz(10), leading=sz(13), textColor=C_DARK,  spaceBefore=sp(8), spaceAfter=sp(4)),
-        "body":     ParagraphStyle("body",     fontName="Helvetica",       fontSize=sz(8),  textColor=C_DARK,  leading=sz(11)),
+        "section":  ParagraphStyle("section",  fontName="Helvetica-Bold",  fontSize=sz(10), leading=sz(13), textColor=C_BRAND,  spaceBefore=sp(8), spaceAfter=sp(4)),
+        "body":     ParagraphStyle("body",     fontName="Helvetica",       fontSize=sz(8),  textColor=C_BRAND,  leading=sz(11)),
         "small":    ParagraphStyle("small",    fontName="Helvetica",       fontSize=sz(7),  textColor=C_GREY,  leading=sz(9)),
         "footer":   ParagraphStyle("footer",   fontName="Helvetica",       fontSize=sz(7),  leading=sz(9),  textColor=C_GREY,  alignment=TA_CENTER),
         "ms":       ParagraphStyle("ms",       fontName="Helvetica",       fontSize=sz(7),  leading=sz(9),  textColor=C_GREY,  alignment=TA_CENTER),
@@ -154,7 +153,7 @@ def _gate_square(cx: float, cy: float, rad: float, label: str = "") -> list:
     """Vektor-Quadrat für ein Gate, optional mit weißer Nummer (z.B. "1") —
     unterscheidet sich bewusst von der Meilenstein-Raute (Form statt Farbe)."""
     shapes = [Rect(cx - rad, cy - rad, rad * 2, rad * 2,
-                    fillColor=C_DARK, strokeColor=C_WHITE, strokeWidth=0.5)]
+                    fillColor=C_BRAND, strokeColor=C_WHITE, strokeWidth=0.5)]
     if label:
         shapes.append(String(cx, cy - _marker_label_size(rad, label) * 0.35, label,
                               fontName="Helvetica-Bold", fontSize=_marker_label_size(rad, label),
@@ -384,7 +383,7 @@ def render_a4_executive(plan: CondensedPlan, source_file: str,
         avail_w * 0.28,  # Verantwortlich
     ])
     pt.setStyle(TableStyle([
-        ("BACKGROUND",    (0, 0), (-1, 0), C_DARK),
+        ("BACKGROUND",    (0, 0), (-1, 0), C_BRAND),
         ("TEXTCOLOR",     (0, 0), (-1, 0), C_WHITE),
         ("FONTNAME",      (0, 0), (-1, 0), "Helvetica-Bold"),
         ("FONTSIZE",      (0, 0), (-1, -1), s["body"].fontSize),
@@ -596,7 +595,7 @@ def render_a3_gantt(plan: CondensedPlan, source_file: str,
                                 alignment=TA_CENTER, textColor=C_WHITE)
     task_style = ParagraphStyle("task_label", fontName="Helvetica",
                                 fontSize=s["small"].fontSize, leading=s["small"].leading,
-                                textColor=C_DARK)
+                                textColor=C_BRAND)
 
     header = [Paragraph("<b>Phase / Vorgang</b>", hdr_style)]
     for m_start, _ in months:
@@ -607,7 +606,7 @@ def render_a3_gantt(plan: CondensedPlan, source_file: str,
     # wiederholen sich automatisch auf jeder Seite (repeatRows).
     data = [header]
     style_cmds = [
-        ("BACKGROUND",    (0, 0), (-1, 0), C_DARK),
+        ("BACKGROUND",    (0, 0), (-1, 0), C_BRAND),
         ("TEXTCOLOR",     (0, 0), (-1, 0), C_WHITE),
         ("GRID",          (0, 0), (-1, -1), 0.3, C_BORDER),
         ("TOPPADDING",    (0, 0), (-1, -1), cell_pad),

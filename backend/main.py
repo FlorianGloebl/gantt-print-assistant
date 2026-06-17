@@ -2,6 +2,7 @@ from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, JSONResponse
 from datetime import datetime
+import re
 import uuid
 
 from models import CondensedPlan, ValidationResult
@@ -22,6 +23,18 @@ app.add_middleware(
 
 # In-memory session store (MVP: no persistence)
 _sessions: dict[str, dict] = {}
+_MAX_SESSIONS = 200
+_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+_MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # 10 MB
+
+
+def _get_session(session_id: str) -> dict:
+    if not _UUID_RE.match(session_id):
+        raise HTTPException(400, "Ungültige Session-ID.")
+    session = _sessions.get(session_id)
+    if not session:
+        raise HTTPException(404, "Session nicht gefunden. Bitte Datei erneut hochladen.")
+    return session
 
 
 @app.get("/health")
@@ -36,13 +49,20 @@ async def upload_file(file: UploadFile = File(...)):
     if suffix not in allowed:
         raise HTTPException(400, f"Dateiformat nicht unterstützt. Erlaubt: {', '.join(allowed)}")
 
-    content = await file.read()
-    if len(content) > 10 * 1024 * 1024:
-        raise HTTPException(400, "Datei zu groß (max. 10 MB)")
+    chunks: list[bytes] = []
+    size = 0
+    while chunk := await file.read(65536):
+        size += len(chunk)
+        if size > _MAX_UPLOAD_BYTES:
+            raise HTTPException(400, "Datei zu groß (max. 10 MB)")
+        chunks.append(chunk)
+    content = b"".join(chunks)
 
     result = parse_file(content, file.filename)
 
     session_id = str(uuid.uuid4())
+    if len(_sessions) >= _MAX_SESSIONS:
+        _sessions.pop(next(iter(_sessions)))
     _sessions[session_id] = {
         "filename": file.filename,
         "tasks": result.valid_tasks,
@@ -56,9 +76,7 @@ async def upload_file(file: UploadFile = File(...)):
 
 @app.get("/condense/{session_id}")
 def condense_plan(session_id: str, project_name: str = "Projektplan"):
-    session = _sessions.get(session_id)
-    if not session:
-        raise HTTPException(404, "Session nicht gefunden. Bitte Datei erneut hochladen.")
+    session = _get_session(session_id)
 
     plan = condense(
         project_id=session_id[:8],
@@ -76,9 +94,7 @@ VALID_SIZES = {"a0", "a1", "a2", "a3", "a4", "a5"}
 @app.get("/pdf/a4/{session_id}")
 def pdf_a4(session_id: str, project_name: str = "Projektplan",
            preview: bool = False, paper_size: str = "a4"):
-    session = _sessions.get(session_id)
-    if not session:
-        raise HTTPException(404, "Session nicht gefunden.")
+    session = _get_session(session_id)
 
     size = paper_size.lower() if paper_size.lower() in VALID_SIZES else "a4"
 
@@ -101,9 +117,7 @@ def pdf_a4(session_id: str, project_name: str = "Projektplan",
 @app.get("/pdf/a3/{session_id}")
 def pdf_a3(session_id: str, project_name: str = "Projektplan",
            preview: bool = False, paper_size: str = "a3", detail: bool = False):
-    session = _sessions.get(session_id)
-    if not session:
-        raise HTTPException(404, "Session nicht gefunden.")
+    session = _get_session(session_id)
 
     size = paper_size.lower() if paper_size.lower() in VALID_SIZES else "a3"
 
@@ -134,9 +148,7 @@ def _get_plan(session: dict, session_id: str, project_name: str):
 
 @app.get("/export/json/{session_id}")
 def export_json_endpoint(session_id: str, project_name: str = "Projektplan"):
-    session = _sessions.get(session_id)
-    if not session:
-        raise HTTPException(404, "Session nicht gefunden.")
+    session = _get_session(session_id)
 
     plan = _get_plan(session, session_id, project_name)
     data = export_json(plan, session["tasks"])
@@ -149,9 +161,7 @@ def export_json_endpoint(session_id: str, project_name: str = "Projektplan"):
 
 @app.get("/export/excel/{session_id}")
 def export_excel_endpoint(session_id: str, project_name: str = "Projektplan"):
-    session = _sessions.get(session_id)
-    if not session:
-        raise HTTPException(404, "Session nicht gefunden.")
+    session = _get_session(session_id)
 
     _get_plan(session, session_id, project_name)
     data = export_excel(session["tasks"])
@@ -164,9 +174,7 @@ def export_excel_endpoint(session_id: str, project_name: str = "Projektplan"):
 
 @app.get("/export/csv/{session_id}")
 def export_csv_endpoint(session_id: str, project_name: str = "Projektplan"):
-    session = _sessions.get(session_id)
-    if not session:
-        raise HTTPException(404, "Session nicht gefunden.")
+    session = _get_session(session_id)
 
     _get_plan(session, session_id, project_name)
     data = export_csv(session["tasks"])

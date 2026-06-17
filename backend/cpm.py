@@ -13,6 +13,7 @@ Lag (`Dependency.lag_days`) wird als Kalendertage interpretiert (MSPDI LagFormat
 from datetime import date, timedelta
 
 from models import Task, Dependency, DependencyType, CriticalPathInfo, QualityWarning
+from dateutils import add_workdays, subtract_workdays, count_workdays
 
 MIN_PREDECESSOR_RATIO_FOR_CPM = 0.3
 
@@ -141,7 +142,7 @@ def compute_cpm(tasks: list[Task]) -> CriticalPathInfo:
 
     by_id = {t.task_id: t for t in tasks}
     populate_successors(tasks)
-    durations = {t.task_id: max((t.end_date - t.start_date).days, 0) for t in tasks}
+    durations = {t.task_id: max(count_workdays(t.start_date, t.end_date), 0) for t in tasks}
     order = _topological_order(tasks)
 
     # ── Vorwärtslauf ────────────────────────────────────────────────────────
@@ -157,19 +158,22 @@ def compute_cpm(tasks: list[Task]) -> CriticalPathInfo:
             elif link.type == DependencyType.start_to_start:
                 es_candidates.append(pred.earliest_start + lag)
             elif link.type == DependencyType.finish_to_finish:
-                es_candidates.append(pred.earliest_finish + lag - timedelta(days=durations[t.task_id]))
+                es_candidates.append(subtract_workdays(pred.earliest_finish + lag, durations[t.task_id]))
             elif link.type == DependencyType.start_to_finish:
-                es_candidates.append(pred.earliest_start + lag - timedelta(days=durations[t.task_id]))
+                es_candidates.append(subtract_workdays(pred.earliest_start + lag, durations[t.task_id]))
 
         t.earliest_start = max(es_candidates)
-        t.earliest_finish = t.earliest_start + timedelta(days=durations[t.task_id])
+        t.earliest_finish = add_workdays(t.earliest_start, durations[t.task_id])
 
     # ── Anker für Rückwärtslauf: geplantes Gesamtende ──────────────────────
     project_end = max(t.end_date for t in tasks)
     end_tasks = [t for t in tasks if not t.successors]
     if not end_tasks:
         end_tasks = tasks
-    forward_finish = max(t.earliest_finish for t in end_tasks)
+    forward_finish = max(
+        (t.earliest_finish for t in end_tasks if t.earliest_finish is not None),
+        default=project_end,
+    )
     end_date_at_risk = forward_finish > project_end
 
     # ── Rückwärtslauf (in umgekehrter topologischer Reihenfolge) ───────────
@@ -189,16 +193,16 @@ def compute_cpm(tasks: list[Task]) -> CriticalPathInfo:
                     if link.type == DependencyType.finish_to_start:
                         lf_candidates.append(succ.latest_start - lag)
                     elif link.type == DependencyType.start_to_start:
-                        lf_candidates.append(succ.latest_start - lag + timedelta(days=durations[t.task_id]))
+                        lf_candidates.append(add_workdays(succ.latest_start - lag, durations[t.task_id]))
                     elif link.type == DependencyType.finish_to_finish:
                         lf_candidates.append(succ.latest_finish - lag)
                     elif link.type == DependencyType.start_to_finish:
-                        lf_candidates.append(succ.latest_finish - lag + timedelta(days=durations[t.task_id]))
+                        lf_candidates.append(add_workdays(succ.latest_finish - lag, durations[t.task_id]))
             t.latest_finish = min(lf_candidates) if lf_candidates else project_end
             t.latest_finish = min(t.latest_finish, project_end)
 
-        t.latest_start = t.latest_finish - timedelta(days=durations[t.task_id])
-        t.float_days = (t.latest_start - t.earliest_start).days
+        t.latest_start = subtract_workdays(t.latest_finish, durations[t.task_id])
+        t.float_days = count_workdays(t.earliest_start, t.latest_start)
         t.critical_path_flag = t.float_days <= 0
 
         if t.buffer_days is None or t.buffer_days > t.float_days:

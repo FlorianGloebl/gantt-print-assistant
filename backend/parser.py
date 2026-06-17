@@ -482,8 +482,15 @@ def parse_file(content: bytes, filename: str) -> ValidationResult:
     warnings: List[ValidationWarning] = []
     tasks: List[Task] = []
 
+    fname_lower = filename.lower()
+    if fname_lower.endswith(".csv"):
+        source_system = "CSV"
+    elif fname_lower.endswith(".xml"):
+        source_system = "MS Project XML"
+    else:
+        source_system = "Excel"
+
     try:
-        fname_lower = filename.lower()
         if fname_lower.endswith(".csv"):
             for sep in [";", ",", "\t"]:
                 try:
@@ -606,10 +613,7 @@ def parse_file(content: bytes, filename: str) -> ValidationResult:
 
         if not start or not end:
             error_count += 1
-            if not start:
-                start = date.today()
-            if not end:
-                end = date.today()
+            continue
 
         status_raw = (get("status") or "").lower()
         status = STATUS_MAP.get(status_raw, TaskStatus.not_started)
@@ -688,7 +692,7 @@ def parse_file(content: bytes, filename: str) -> ValidationResult:
             dependencies=dependencies,
             risk_level=risk,
             notes=get("notes"),
-            source_system="Excel",
+            source_system=source_system,
             source_reference=str(row_num),
             predecessor_links=predecessor_links,
             parent_id=get("parent_id"),

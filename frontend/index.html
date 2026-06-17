@@ -397,7 +397,7 @@
         <template x-for="w in plan?.quality?.data_basis_warnings ?? []" :key="w.code">
           <div class="flex items-start gap-2 text-xs px-3 py-2 rounded-lg bg-blue-50 text-blue-700">
             <span class="font-bold mt-0.5 shrink-0">ℹ</span>
-            <span x-text="'Hinweis: ' + w.message"></span>
+            <span x-text="w.message"></span>
           </div>
         </template>
       </div>
