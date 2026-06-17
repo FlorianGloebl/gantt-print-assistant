@@ -14,7 +14,7 @@ app = FastAPI(title="GANTT Print Assistant API", version="0.1.1")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://floriangloebl.github.io", "null"],
+    allow_origins=["https://floriangloebl.github.io", "https://gantt-print-assistant.onrender.com", "null"],
     allow_origin_regex=r"http://(localhost|127\.0\.0\.1)(:\d+)?",
     allow_methods=["*"],
     allow_headers=["*"],
